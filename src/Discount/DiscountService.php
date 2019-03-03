@@ -2,91 +2,60 @@
 
 namespace RstGroup\Recruitment\ConferenceSystem\Discount;
 
-use RstGroup\Recruitment\ConferenceSystem\Conference\ConferenceRepository;
-
 class DiscountService
 {
-    protected $allDiscounts = [
-        'group', 'code'
-    ];
+    private $discountsToProcess = [];
+    private $totalDiscount = 0;
+    private $price;
 
-    public function calculate($conferenceId, $attendantsCount = null, $price = null, $discountCode = null, $discountsTypes = [], &$is_error = false, &$error_message = null)
+    public function __construct($price)
     {
-        if (empty($discountsTypes)) {
-            $discountsToProcess = $this->allDiscounts;
-        } else {
-            $discountsToProcess = array_intersect($this->allDiscounts, $discountsTypes);
-        }
-
-        $totalDiscount = 0;
-        $excludeCodeDiscount = false;
-
-        foreach ($discountsToProcess as $discount) {
-            switch ($discount) {
-                case 'group':
-                    $conference = $this->getConferencesRepository()->getConference($conferenceId);
-
-                    if ($conference === null) {
-                        throw new \InvalidArgumentException(sprintf("Conference with id %s not exist", $conferenceId));
-                    }
-
-                    $groupDiscount = $conference->getGroupDiscount();
-
-                    if (!is_array($groupDiscount)) {
-                        $is_error = true;
-                        $error_message = 'Error';
-                        return;
-                    }
-
-                    $matchingDiscountPercent = 0;
-
-                    foreach ($groupDiscount as $minAttendantsCount => $discountPercent) {
-                        if ($attendantsCount >= $minAttendantsCount) {
-                            $matchingDiscountPercent = $discountPercent;
-                        }
-                    }
-
-                    $totalDiscount += $price * (float)"0.{$matchingDiscountPercent}";
-
-                    $excludeCodeDiscount = true;
-
-                    break;
-                case 'code':
-                    if ($excludeCodeDiscount == true) {
-                        continue;
-                    }
-
-                    $conference = $this->getConferencesRepository()->getConference($conferenceId);
-
-                    if ($conference === null) {
-                        throw new \InvalidArgumentException(sprintf("Conference with id %s not exist", $conferenceId));
-                    }
-
-                    if ($conference->isCodeNotUsed($discountCode)) {
-                        list($type, $discount) =  $conference->getDiscountForCode($discountCode);
-
-                        if ($type == 'percent') {
-                            $totalDiscount += $price * (float)"0.{$discount}";
-                        } else if ($type == 'money') {
-                            $totalDiscount += $discount;
-                        } else {
-                            $is_error = true;
-                            $error_message = 'Error';
-                            return;
-                        }
-
-                        $conference->markCodeAsUsed($discountCode);
-                    }
-
-                    break;
-            }
-        }
-
-        return (float)$totalDiscount;
+        $this->price = $price;
     }
 
-    protected function getConferencesRepository()
+    public function addDiscount(DiscountInterface $discount)
     {
-        return new ConferenceRepository();
+        if(!$discount instanceof ExcludesCodeDiscountInterface)
+            array_push($this->discountsToProcess, $discount);
+        else
+            array_unshift($this->discountsToProcess, $discount);
+
+        return $this;
+    }
+
+    public function calculate()
+    {
+        $this->calculateFromSetDiscounts();
+
+        return $this->totalDiscount;
+    }
+
+    protected function calculateFromSetDiscounts()
+    {
+        $excludeCodeDiscount = false;
+        foreach ($this->discountsToProcess as $discount) {
+            if($discount instanceof CodeDiscount && $excludeCodeDiscount === true)
+                continue;
+
+            $value = $discount->calculate();
+            $this->sumUpDiscount($value);
+
+            if($discount instanceof ExcludesCodeDiscountInterface && $discount->getExcludeCodeDiscount()) {
+                $excludeCodeDiscount = true;
+            }
+        }
+    }
+
+    private function sumUpDiscount($discountObject)
+    {
+        if ($discountObject instanceof Percentage)
+            $this->totalDiscount += $this->calculateValueFromPercent($discountObject);
+        elseif ($discountObject instanceof Value)
+            $this->totalDiscount += $discountObject->getValue();
+    }
+
+    private function calculateValueFromPercent($percentObject)
+    {
+        return $this->price * ($percentObject->getValue() / 100);
     }
 }
